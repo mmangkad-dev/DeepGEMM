@@ -188,7 +188,7 @@ static void sm100_fp8_fp4_mega_moe(
 
     // Heuristics
     const auto config = get_mega_moe_config(
-        num_ranks, num_experts, num_experts_per_rank,
+        num_ranks, num_experts, num_experts_per_rank, num_shared_experts,
         num_max_tokens_per_rank, num_tokens, num_topk, hidden, intermediate_hidden,
         num_ring_tokens, num_sf_ring_tokens,
         mma_kind);
