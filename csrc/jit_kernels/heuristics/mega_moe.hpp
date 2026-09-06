@@ -239,10 +239,17 @@ static MegaMoEConfig get_mega_moe_config(
     const int num_dispatch_threads = 128;
     const int num_non_epilogue_threads = 128;
 
+    // A ring that already spans the whole pool pulls each MXFP8FP4 token whole;
+    // splitting it desynchronises the full-pool dispatch and yields NaN activations.
+    const int num_max_pool_tokens = layout::get_num_max_pool_tokens(
+        num_ranks, num_max_tokens_per_rank, num_topk, num_experts_per_rank);
+    const bool use_full_pool_fp8_fp4_path =
+        mma_kind == MmaKind::MXFP8FP4 and num_ring_tokens >= num_max_pool_tokens;
+
     // Pull: divide token bytes by 2 until <= kPullThreshold
     constexpr int kPullThreshold = 4096;
     int num_bytes_per_pull = hidden * get_element_bits(mma_kind) / 8;
-    while (num_bytes_per_pull > kPullThreshold) {
+    while (not use_full_pool_fp8_fp4_path and num_bytes_per_pull > kPullThreshold) {
         DG_HOST_ASSERT(num_bytes_per_pull % 2 == 0);
         num_bytes_per_pull /= 2;
     }
