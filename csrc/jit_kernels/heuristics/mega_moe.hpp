@@ -104,6 +104,21 @@ static bool is_nvfp4_mma_kind(const MmaKind& mma_kind) {
     return mma_kind == MmaKind::NVFP4;
 }
 
+// Mirror of `kUseFullPoolFP8FP4Path` in `sm100_fp8_fp4_mega_moe.cuh`. On that
+// branch the kernel pulls a whole token with a single TMA, so the pull buffer
+// has to be sized for the whole token; every other case keeps chunked pulls,
+// which also keeps the dispatch buffers small enough to hold the pipeline
+// depth. BF16 runs `sm100_bf16_mega_moe.cuh`, which always chunks.
+// Keep this predicate in step with the kernel's.
+static bool uses_full_pool_fp8_fp4_path(
+    const MmaKind& mma_kind, const int& num_shared_experts,
+    const int& num_ring_tokens, const int& num_max_pool_tokens,
+    const int& block_n, const int& block_k, const int& intermediate_hidden) {
+    return mma_kind != MmaKind::BF16 and num_shared_experts == 0 and
+           num_ring_tokens >= num_max_pool_tokens and block_k == block_n and
+           intermediate_hidden / block_k <= 32;
+}
+
 static std::tuple<int, int, int, int, int> get_block_config_for_mega_moe(
     const int& num_ranks, const int& num_experts,
     const int& num_max_tokens_per_rank, const int& num_topk,
@@ -215,6 +230,7 @@ static std::pair<int, int> get_pipeline_config_for_mega_moe(
 
 static MegaMoEConfig get_mega_moe_config(
     const int& num_ranks, const int& num_experts, const int& num_experts_per_rank,
+    const int& num_shared_experts,
     const int& num_max_tokens_per_rank, const int& num_tokens, const int& num_topk,
     const int& hidden, const int& intermediate_hidden,
     const int& num_ring_tokens,
@@ -239,12 +255,14 @@ static MegaMoEConfig get_mega_moe_config(
     const int num_dispatch_threads = 128;
     const int num_non_epilogue_threads = 128;
 
-    // A ring that already spans the whole pool pulls each MXFP8FP4 token whole;
-    // splitting it desynchronises the full-pool dispatch and yields NaN activations.
+    // The kernel's full-pool branch pulls a whole token in one TMA into a buffer
+    // this size, so it must cover the token; splitting it overruns that buffer
+    // and leaves NaN activations behind.
     const int num_max_pool_tokens = layout::get_num_max_pool_tokens(
         num_ranks, num_max_tokens_per_rank, num_topk, num_experts_per_rank);
-    const bool use_full_pool_fp8_fp4_path =
-        mma_kind == MmaKind::MXFP8FP4 and num_ring_tokens >= num_max_pool_tokens;
+    const bool use_full_pool_fp8_fp4_path = uses_full_pool_fp8_fp4_path(
+        mma_kind, num_shared_experts, num_ring_tokens, num_max_pool_tokens,
+        block_n, block_k, intermediate_hidden);
 
     // Pull: divide token bytes by 2 until <= kPullThreshold
     constexpr int kPullThreshold = 4096;
